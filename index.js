@@ -1,52 +1,56 @@
 import Audic from 'audic';
-import puppeteer from 'puppeteer';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'node:fs';
 import { exec } from 'child_process';
+import { connect } from 'puppeteer-real-browser';
+
+let page, browser;
 
 const passCaptcha = async () => {
-  let browser;
   try {
-    browser = await puppeteer.launch({
+    const connection = await connect({
+      turnstile: true,
       headless: 'new',
-      timeout: 120000,
-      defaultViewport: {
-        width: 1920,
-        height: 1080,
+      customConfig: {},
+      connectOption: {
+        defaultViewport: null,
       },
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
-        '--window-size=1920,1080',
-      ],
+      timeout: 120000,
+      plugins: [StealthPlugin()],
     });
-    const page = await browser.newPage();
+
+    page = connection.page;
+    browser = connection.browser;
+
     await page.setDefaultNavigationTimeout(120000);
     await page.setDefaultTimeout(120000);
 
-    // Add user agent
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
 
-    // Wait longer for initial load
     await page.goto('https://ita-schengen.idata.com.tr/tr', {
       waitUntil: 'networkidle0',
       timeout: 120000,
     });
     await page.setViewport({ width: 1920, height: 1080 });
 
-    // Değiştirilmiş captcha image seçici
-    await page.waitForSelector('.imageCaptcha', { timeout: 120000 });
+    // Use setTimeout with Promise instead of waitForTimeout
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Wait for the captcha image and make sure it's visible
+    await page.waitForSelector('.imageCaptcha', { 
+      timeout: 120000,
+      visible: true 
+    });
+    
     const imageElement = await page.$('.imageCaptcha');
     const image = await imageElement.evaluate((el) => el.src);
 
     const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
     const imageBuffer = Buffer.from(base64Data, 'base64');
 
-    await new Promise((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       fs.writeFile('captcha.png', imageBuffer, async (err) => {
         if (err) {
           console.error(err);
@@ -69,8 +73,11 @@ const passCaptcha = async () => {
           try {
             const captchaNumber = stdout.trim();
             console.log(`Captcha number: ${captchaNumber}`);
-            if (isNaN(captchaNumber)) {
-              throw new Error('Invalid captcha number');
+            if (!captchaNumber || isNaN(captchaNumber)) {
+              console.log('Invalid captcha number');
+              await browser.close();
+              await passCaptcha();
+              return;
             }
 
             await page.waitForSelector('#mailConfirmCodeControl');
@@ -111,11 +118,9 @@ const passCaptcha = async () => {
                 }
 
                 try {
-                  // Form elemanlarını tekrar seç ve değiştir
                   await page.select('#totalPerson', '2');
                   await page.select('#totalPerson', '1');
 
-                  // İsteği puppeteer üzerinden yapalım
                   const response = await page.evaluate(async () => {
                     const csrfToken = document
                       .querySelector('meta[name="csrf-token"]')
@@ -140,16 +145,16 @@ const passCaptcha = async () => {
                   });
 
                   if (response.hasOwnProperty('isAvailable')) {
-                      if (response.isAvailable != false) {
-                        await playSounds();
-                      }
+                    if (response.isAvailable !== false) {
+                      await playSounds();
+                    }
                     console.log('isAvailable:', response.isAvailable);
-                    await new Promise((resolve) => setTimeout(resolve, 300000));
+                    await new Promise((resolve) => setTimeout(resolve, 60000));
                     return makeRequest(0);
                   }
 
                   console.log(`Invalid response, retrying...`);
-                  await new Promise((resolve) => setTimeout(resolve, 5000));
+                  await new Promise((resolve) => setTimeout(resolve, 2000));
                   return makeRequest(retryCount + 1);
                 } catch (error) {
                   console.error('Error:', error);
@@ -162,8 +167,6 @@ const passCaptcha = async () => {
             };
 
             await checkAvailableDates();
-            // setInterval(checkAvailableDates, 3000);
-
             resolve();
           } catch (err) {
             reject(err);
