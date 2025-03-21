@@ -88,7 +88,7 @@ const passCaptcha = async () => {
               Promise.race([
                 page.waitForNavigation({ waitUntil: 'networkidle0' }),
                 page.waitForSelector('.swal2-modal.show-swal2.visible', {
-                  timeout: 5000,
+                  timeout: 20000,
                 }),
               ]),
             ]);
